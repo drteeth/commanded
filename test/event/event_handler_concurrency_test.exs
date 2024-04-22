@@ -169,6 +169,35 @@ defmodule Commanded.Event.EventHandlerConcurrencyTest do
                  fn -> start_supervised!({ConcurrentEventHandler, concurrency: :invalid}) end
   end
 
+  test "should not write a last_seen larger or equal to the last failing event" do
+    start_supervised!({ConcurrentEventHandler, state: [fail_on: 3]})
+
+    stream = "stream1"
+    append_events_to_stream(stream, count: 5)
+    wait_until_settle(stream)
+
+    checkpoint =
+      :sys.get_state(DefaultApp.EventStore)
+      |> Map.get(:persistent_subscriptions)
+      |> Map.get("Commanded.Event.ConcurrentEventHandler")
+      |> Map.get(:checkpoint)
+
+    assert checkpoint == 3
+  end
+
+  defp wait_until_settle(stream_id, pids \\ MapSet.new()) do
+    receive do
+      {:event, ^stream_id, pid} ->
+        wait_until_settle(stream_id, MapSet.put(pids, pid))
+
+      {:handler_error, ^stream_id, pid} ->
+        wait_until_settle(stream_id, MapSet.delete(pids, pid))
+    after
+      300 ->
+        pids
+    end
+  end
+
   defp append_events_to_stream(stream_uuid, opts) do
     index = Keyword.get(opts, :index, 1)
     count = Keyword.get(opts, :count, 1) + index - 1
